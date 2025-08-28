@@ -641,7 +641,9 @@ impl Config {
             None => ConfigProfile::default(),
         };
 
-        let sandbox_policy = cfg.derive_sandbox_policy(sandbox_mode);
+        // Precedence: CLI override > profile value > top-level config value.
+        let sandbox_policy =
+            cfg.derive_sandbox_policy(sandbox_mode.or(config_profile.sandbox_mode));
 
         let mut model_providers = built_in_model_providers();
         // Merge user-defined providers into the built-in list.
