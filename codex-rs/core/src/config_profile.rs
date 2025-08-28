@@ -5,6 +5,7 @@ use crate::config_types::Verbosity;
 use crate::protocol::AskForApproval;
 use codex_protocol::config_types::ReasoningEffort;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::SandboxMode;
 
 /// Collection of common configuration options that a user can define as a unit
 /// in `config.toml`.
@@ -15,6 +16,7 @@ pub struct ConfigProfile {
     /// [`ModelProviderInfo`] to use.
     pub model_provider: Option<String>,
     pub approval_policy: Option<AskForApproval>,
+    pub sandbox_mode: Option<SandboxMode>,
     pub disable_response_storage: Option<bool>,
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
