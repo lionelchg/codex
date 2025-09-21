@@ -1079,61 +1079,50 @@ mod tests {
     }
 
     #[test]
-    fn test_notions_additional_properties_schema_converts() {
-        let notion_tool = mcp_types::Tool {
+    fn test_mcp_tool_additional_properties_schema_converts() {
+        let tool_with_schema = mcp_types::Tool {
             annotations: None,
-            description: Some("Create a Notion database".to_string()),
+            description: Some("Tool with additional properties schema".to_string()),
             input_schema: ToolInputSchema {
                 properties: Some(serde_json::json!({
-                    "parent": {
+                    "metadata": {
                         "type": "object",
-                        "properties": {
-                            "type": { "type": "string", "enum": ["page_id"] },
-                            "page_id": { "type": "string", "format": "uuid" }
-                        },
-                        "required": ["type", "page_id"]
-                    },
-                    "properties": {
-                        "type": "object",
-                        "description": "Property schema of database.",
+                        "description": "Arbitrary metadata object",
                         "additionalProperties": {
                             "oneOf": [
                                 {
                                     "type": "object",
                                     "properties": {
-                                        "title": {
+                                        "name": {
                                             "type": "object",
                                             "properties": {},
                                             "additionalProperties": false
                                         },
-                                        "description": { "type": "string" }
+                                        "notes": { "type": "string" }
                                     },
-                                    "required": ["title"],
+                                    "required": ["name"],
                                     "additionalProperties": false
                                 }
                             ]
                         }
                     }
                 })),
-                required: Some(vec!["parent".to_string(), "properties".to_string()]),
+                required: Some(vec!["metadata".to_string()]),
                 r#type: "object".to_string(),
             },
-            name: "create-a-database".to_string(),
+            name: "sample-tool".to_string(),
             output_schema: None,
             title: None,
         };
 
-        let converted =
-            mcp_tool_to_openai_tool("notion__API-create-a-database".to_string(), notion_tool)
-                .expect("Notion tool should convert");
+        let converted = mcp_tool_to_openai_tool("test/sample".to_string(), tool_with_schema)
+            .expect("tool should convert");
 
         let JsonSchema::Object { properties, .. } = converted.parameters else {
             panic!("expected object parameters schema");
         };
 
-        let properties_schema = properties
-            .get("properties")
-            .expect("missing properties schema");
+        let properties_schema = properties.get("metadata").expect("missing metadata schema");
 
         let JsonSchema::Object {
             additional_properties,
@@ -1155,7 +1144,7 @@ mod tests {
             panic!("nested additionalProperties schema expected to be an object");
         };
 
-        assert!(nested_props.contains_key("title"));
+        assert!(nested_props.contains_key("name"));
     }
 
     #[test]
