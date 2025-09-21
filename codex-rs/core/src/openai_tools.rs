@@ -11,7 +11,7 @@ use crate::tool_apply_patch::ApplyPatchToolType;
 use crate::tool_apply_patch::create_apply_patch_freeform_tool;
 use crate::tool_apply_patch::create_apply_patch_json_tool;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResponsesApiTool {
     pub(crate) name: String,
     pub(crate) description: String,
@@ -20,6 +20,25 @@ pub struct ResponsesApiTool {
     /// `properties` must be present in `required`.
     pub(crate) strict: bool,
     pub(crate) parameters: JsonSchema,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub(crate) enum AdditionalProperties {
+    Bool(bool),
+    Schema(Box<JsonSchema>),
+}
+
+impl From<bool> for AdditionalProperties {
+    fn from(value: bool) -> Self {
+        AdditionalProperties::Bool(value)
+    }
+}
+
+impl From<JsonSchema> for AdditionalProperties {
+    fn from(value: JsonSchema) -> Self {
+        AdditionalProperties::Schema(Box::new(value))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -154,7 +173,7 @@ pub(crate) enum JsonSchema {
             rename = "additionalProperties",
             skip_serializing_if = "Option::is_none"
         )]
-        additional_properties: Option<bool>,
+        additional_properties: Option<AdditionalProperties>,
     },
 }
 
@@ -200,7 +219,7 @@ fn create_unified_exec_tool() -> OpenAiTool {
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["input".to_string()]),
-            additional_properties: Some(false),
+            additional_properties: Some(false.into()),
         },
     })
 }
@@ -247,7 +266,7 @@ fn create_shell_tool() -> OpenAiTool {
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["command".to_string()]),
-            additional_properties: Some(false),
+            additional_properties: Some(false.into()),
         },
     })
 }
@@ -271,7 +290,7 @@ fn create_view_image_tool() -> OpenAiTool {
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["path".to_string()]),
-            additional_properties: Some(false),
+            additional_properties: Some(false.into()),
         },
     })
 }
@@ -457,13 +476,9 @@ fn sanitize_json_schema(value: &mut JsonValue) {
                         JsonValue::Object(serde_json::Map::new()),
                     );
                 }
-                // If additionalProperties is an object schema, sanitize it too.
-                // Leave booleans as-is, since JSON Schema allows boolean here.
                 if let Some(ap) = map.get_mut("additionalProperties") {
-                    let is_bool = matches!(ap, JsonValue::Bool(_));
-                    if !is_bool {
-                        sanitize_json_schema(ap);
-                    }
+                    let normalized = normalize_additional_properties(std::mem::take(ap));
+                    *ap = normalized;
                 }
             }
 
@@ -473,6 +488,37 @@ fn sanitize_json_schema(value: &mut JsonValue) {
             }
         }
         _ => {}
+    }
+}
+
+fn normalize_additional_properties(value: JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Bool(_) => value,
+        JsonValue::Object(mut map) => {
+            if let Some(one_of) = map.remove("oneOf") {
+                if let JsonValue::Array(arr) = one_of {
+                    if let Some(first) = arr.into_iter().next() {
+                        return normalize_additional_properties(first);
+                    }
+                }
+                return JsonValue::Bool(true);
+            }
+
+            let mut normalized = JsonValue::Object(map);
+            sanitize_json_schema(&mut normalized);
+            normalized
+        }
+        JsonValue::Array(arr) => {
+            if let Some(first) = arr.into_iter().next() {
+                normalize_additional_properties(first)
+            } else {
+                JsonValue::Bool(true)
+            }
+        }
+        mut other => {
+            sanitize_json_schema(&mut other);
+            other
+        }
     }
 }
 
@@ -711,7 +757,7 @@ mod tests {
                                     "string_property".to_string(),
                                     "number_property".to_string(),
                                 ]),
-                                additional_properties: Some(false),
+                                additional_properties: Some(false.into()),
                             },
                         ),
                     ]),
@@ -1030,6 +1076,86 @@ mod tests {
                 strict: false,
             })
         );
+    }
+
+    #[test]
+    fn test_notions_additional_properties_schema_converts() {
+        let notion_tool = mcp_types::Tool {
+            annotations: None,
+            description: Some("Create a Notion database".to_string()),
+            input_schema: ToolInputSchema {
+                properties: Some(serde_json::json!({
+                    "parent": {
+                        "type": "object",
+                        "properties": {
+                            "type": { "type": "string", "enum": ["page_id"] },
+                            "page_id": { "type": "string", "format": "uuid" }
+                        },
+                        "required": ["type", "page_id"]
+                    },
+                    "properties": {
+                        "type": "object",
+                        "description": "Property schema of database.",
+                        "additionalProperties": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {
+                                            "type": "object",
+                                            "properties": {},
+                                            "additionalProperties": false
+                                        },
+                                        "description": { "type": "string" }
+                                    },
+                                    "required": ["title"],
+                                    "additionalProperties": false
+                                }
+                            ]
+                        }
+                    }
+                })),
+                required: Some(vec!["parent".to_string(), "properties".to_string()]),
+                r#type: "object".to_string(),
+            },
+            name: "create-a-database".to_string(),
+            output_schema: None,
+            title: None,
+        };
+
+        let converted =
+            mcp_tool_to_openai_tool("notion__API-create-a-database".to_string(), notion_tool)
+                .expect("Notion tool should convert");
+
+        let JsonSchema::Object { properties, .. } = converted.parameters else {
+            panic!("expected object parameters schema");
+        };
+
+        let properties_schema = properties
+            .get("properties")
+            .expect("missing properties schema");
+
+        let JsonSchema::Object {
+            additional_properties,
+            ..
+        } = properties_schema
+        else {
+            panic!("properties schema should be an object");
+        };
+
+        let Some(AdditionalProperties::Schema(nested)) = additional_properties else {
+            panic!("additionalProperties did not retain schema");
+        };
+
+        let JsonSchema::Object {
+            properties: nested_props,
+            ..
+        } = nested.as_ref()
+        else {
+            panic!("nested additionalProperties schema expected to be an object");
+        };
+
+        assert!(nested_props.contains_key("title"));
     }
 
     #[test]
