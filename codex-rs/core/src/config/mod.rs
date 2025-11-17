@@ -1250,13 +1250,16 @@ fn default_review_model() -> String {
 }
 
 /// Returns the path to the Codex configuration directory, which can be
-/// specified by the `CODEX_HOME` environment variable. If not set, defaults to
-/// `~/.codex`.
+/// specified by the `CODEX_HOME` environment variable. If not set, Codex looks
+/// for a `.codex` directory in the current working directory first and
+/// otherwise defaults to `~/.codex`.
 ///
 /// - If `CODEX_HOME` is set, the value will be canonicalized and this
 ///   function will Err if the path does not exist.
-/// - If `CODEX_HOME` is not set, this function does not verify that the
-///   directory exists.
+/// - If `CODEX_HOME` is not set and a `.codex` directory exists in the current
+///   working directory, that directory will be canonicalized and returned.
+/// - If neither condition is met, this function falls back to `~/.codex`
+///   without verifying the directory exists.
 pub fn find_codex_home() -> std::io::Result<PathBuf> {
     // Honor the `CODEX_HOME` environment variable when it is set to allow users
     // (and tests) to override the default location.
@@ -1264,6 +1267,13 @@ pub fn find_codex_home() -> std::io::Result<PathBuf> {
         && !val.is_empty()
     {
         return PathBuf::from(val).canonicalize();
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        let local_codex_dir = current_dir.join(".codex");
+        if local_codex_dir.is_dir() {
+            return local_codex_dir.canonicalize();
+        }
     }
 
     let mut p = home_dir().ok_or_else(|| {
@@ -1296,6 +1306,7 @@ mod tests {
 
     use super::*;
     use pretty_assertions::assert_eq;
+    use serial_test::serial;
 
     use std::time::Duration;
     use tempfile::TempDir;
@@ -3344,6 +3355,94 @@ trust_level = "untrusted"
         }
 
         Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn find_codex_home_prefers_local_codex_directory() -> std::io::Result<()> {
+        let workspace = TempDir::new()?;
+        let local_codex = workspace.path().join(".codex");
+        std::fs::create_dir(&local_codex)?;
+
+        let _dir_guard = CurrentDirGuard::change_to(workspace.path())?;
+        let _env_guard = EnvVarGuard::unset("CODEX_HOME");
+
+        let resolved = find_codex_home()?;
+
+        assert_eq!(resolved, local_codex.canonicalize()?);
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn find_codex_home_prefers_env_var_over_local_directory() -> std::io::Result<()> {
+        let workspace = TempDir::new()?;
+        let local_codex = workspace.path().join(".codex");
+        std::fs::create_dir(&local_codex)?;
+
+        let override_dir = TempDir::new()?;
+
+        let _dir_guard = CurrentDirGuard::change_to(workspace.path())?;
+        let _env_guard = EnvVarGuard::set_path("CODEX_HOME", override_dir.path());
+
+        let resolved = find_codex_home()?;
+
+        assert_eq!(resolved, override_dir.path().canonicalize()?);
+        Ok(())
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set_path(key: &'static str, value: &Path) -> Self {
+            let original = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let original = std::env::var_os(key);
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => unsafe {
+                    std::env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.key);
+                },
+            }
+        }
+    }
+
+    struct CurrentDirGuard {
+        original: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn change_to(path: &Path) -> std::io::Result<Self> {
+            let original = std::env::current_dir()?;
+            std::env::set_current_dir(path)?;
+            Ok(Self { original })
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
     }
 }
 
