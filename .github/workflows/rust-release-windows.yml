@@ -1,0 +1,58 @@
+# Windows build workflow for codex-rs (push branches)
+name: rust-release-windows
+
+on:
+  push:
+    branches:
+      - "**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Build Windows binaries - ${{ matrix.target }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: codex-rs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+          # - target: aarch64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@1.90
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ${{ github.workspace }}/codex-rs/target/
+          key: cargo-windows-${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cargo build (codex)
+        run: cargo build --release --target ${{ matrix.target }} --bin codex
+
+      - name: Stage artifacts
+        run: |
+          dest="dist/${{ matrix.target }}"
+          mkdir -p "$dest"
+          cp "target/${{ matrix.target }}/release/codex.exe" "$dest/codex-${{ matrix.target }}.exe"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: codex-${{ matrix.target }}
+          path: codex-rs/dist/${{ matrix.target }}/*
